@@ -1,45 +1,228 @@
-### 寻找理论上的“完美模型”
+# DPO 省略版推导
 
+本文整理 DPO（Direct Preference Optimization）中最关键的一段推导：如何从带 KL 约束的 RLHF 优化目标，得到不需要显式训练奖励模型的偏好学习目标。
 
-幻灯片首先给出了 RLHF 的原始优化目标：
+## 1. 从 RLHF 的 KL 约束目标出发
 
-$$\arg \max_\pi \mathbb{E}_{x \sim \mathcal{D}_x, y \sim (\pi(\cdot|x))} r_\phi(x, y) - \beta \text{KL}(\pi \parallel \pi_{\text{ref}})$$
+RLHF 中常见的策略优化目标可以写为：
 
-（即：在不偏离参考模型太远的前提下，想尽办法拿到最高的分数。）
+$$
+\arg \max_\pi
+\mathbb{E}_{x \sim \mathcal{D}_x,\, y \sim \pi(\cdot \mid x)}
+\left[
+r_\phi(x, y)
+- \beta \operatorname{KL}
+\left(
+\pi(\cdot \mid x)
+\parallel
+\pi_{\text{ref}}(\cdot \mid x)
+\right)
+\right]
+$$
 
-数学家们发现，如果我们不考虑神经网络结构的限制（假设策略 $\pi$ 可以是任意模型），这个优化目标其实是有一个闭式解（Closed-form solution）的，也就是理论上最完美的模型 $\pi^*$：
+其中：
 
-$$\pi^*(y|x) = \frac{1}{Z(x)} \pi_{\text{ref}}(y|x) \exp\left(\frac{1}{\beta} r_\phi(x, y)\right)$$
+- $x$ 表示 prompt。
+- $y$ 表示模型回答。
+- $r_\phi(x,y)$ 表示奖励模型给回答打出的分数。
+- $\pi_{\text{ref}}$ 表示参考模型，通常是 SFT 模型。
+- $\beta$ 控制策略偏离参考模型的惩罚强度。
 
-- **直白解释：** 完美模型生成某句话的概率，等于“参考模型生成的概率”乘以“这句话的得分指数”。得分越高，概率放大的倍数就越大。
+这个目标的含义是：模型既要生成高奖励回答，又不能偏离参考模型太远。
 
-- **讨厌的 $Z(x)$：** 这里的 $Z(x)$ 叫配分函数（Partition function）。它的作用是把算出来的值重新压缩回 $0$ 到 $1$ 之间的合法概率分布。**但它是一个极其可怕的项**，因为它要求算出大模型所有可能生成句子的得分总和。在实际工程中，这个计算量是无限大、根本算不出来的。
+## 2. 理论最优策略的闭式解
 
+如果暂时不考虑神经网络结构的限制，并允许策略 $\pi$ 是任意概率分布，那么上述目标存在一个理论闭式解：
 
-### 见证奇迹的时刻
+$$
+\pi^*(y \mid x)
+=
+\frac{1}{Z(x)}
+\pi_{\text{ref}}(y \mid x)
+\exp \left(
+\frac{1}{\beta} r_\phi(x,y)
+\right)
+$$
 
-既然正着算 $Z(x)$ 算不出来，DPO 的作者们选择了“反向操作”。
+这个式子可以理解为：
 
-**第一步：移项并取对数 (Rearrange & take log)**
+```text
+理论最优策略的概率
+= 参考模型概率 × 奖励分数带来的指数加权
+```
 
-作者对上面的完美公式两边同时取对数，把原本用来求 $\pi^*$ 的公式，硬生生反向改写成了用来求奖励模型 $r(x, y)$ 的公式：
+如果某个回答的奖励更高，$\exp(\frac{1}{\beta}r_\phi(x,y))$ 会放大它的生成概率；如果奖励更低，它的概率就会相对变小。
 
-$$r(x, y) = \beta \log \frac{\pi^*(y|x)}{\pi_{\text{ref}}(y|x)} + \beta \log Z(x)$$
+式子中的 $Z(x)$ 是配分函数（partition function）：
 
-_这也就是前一张幻灯片里“你的语言模型暗地里就是奖励模型”的数学根基。_
+$$
+Z(x)
+=
+\sum_y
+\pi_{\text{ref}}(y \mid x)
+\exp \left(
+\frac{1}{\beta} r_\phi(x,y)
+\right)
+$$
 
-**第二步：狸猫换太子 (Parameterization)**
+$Z(x)$ 的作用是归一化，使所有候选回答的概率之和等于 1。问题在于，对于大语言模型来说，所有可能回答 $y$ 的空间极大，因此 $Z(x)$ 在实际训练中无法直接计算。
 
-作者把理论上的完美模型 $\pi^*$，直接替换成了我们实际要用神经网络训练的策略模型 $\pi_\theta$。
+## 3. 将奖励函数反解出来
 
-**第三步：代入 Bradley-Terry 模型 (Substitute into Bradley-Terry)**
+从闭式解出发，对两边取对数：
 
-这是全篇最天才的一步！还记得我们之前聊过，人类偏好是通过 Bradley-Terry 模型里的**分数差值** $r(x, y_w) - r(x, y_l)$ 来计算的吗？
+$$
+\log \pi^*(y \mid x)
+=
+\log \pi_{\text{ref}}(y \mid x)
++ \frac{1}{\beta}r_\phi(x,y)
+- \log Z(x)
+$$
 
-作者把第一步推导出的 $r(x, y)$ 公式，分别代入到赢家 $y_w$ 和输家 $y_l$ 的得分中，然后相减：
+整理可得：
 
-$$( \beta \log \frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} + \beta \log Z(x) ) - ( \beta \log \frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)} + \beta \log Z(x) )$$
+$$
+r_\phi(x,y)
+=
+\beta
+\log
+\frac{\pi^*(y \mid x)}
+{\pi_{\text{ref}}(y \mid x)}
++ \beta \log Z(x)
+$$
 
-**奇迹发生了（The Z will cancel）：**
+这一步是 DPO 的核心观察：在理论最优条件下，奖励函数可以由策略模型和参考模型的 log-prob ratio 表示。
 
-因为不管模型回答了什么（不管是赢家还是输家），提示词 $x$ 都是同一个。所以那个极其可怕、根本算不出来的常数项 $\beta \log Z(x)$ **被完美地减掉、抵消了！**
+也就是说，语言模型本身可以隐式表达一个奖励函数：
+
+```text
+回答相对于参考模型越被当前策略偏好，
+对应的隐式奖励就越高。
+```
+
+## 4. 用可训练策略替代理论最优策略
+
+真实训练中无法直接得到 $\pi^*$，因此 DPO 将理论最优策略重新参数化为当前要训练的策略模型 $\pi_\theta$：
+
+$$
+r_\theta(x,y)
+=
+\beta
+\log
+\frac{\pi_\theta(y \mid x)}
+{\pi_{\text{ref}}(y \mid x)}
++ \beta \log Z(x)
+$$
+
+这里的 $r_\theta(x,y)$ 不是额外训练出来的奖励模型，而是由策略模型 $\pi_\theta$ 和参考模型 $\pi_{\text{ref}}$ 共同定义的隐式奖励。
+
+## 5. 代入 Bradley-Terry 偏好模型
+
+偏好数据通常由三元组组成：
+
+$$
+(x, y_w, y_l)
+$$
+
+其中 $y_w$ 是人类更偏好的回答，$y_l$ 是较差回答。Bradley-Terry 模型用两者的奖励差来表示 $y_w$ 胜过 $y_l$ 的概率：
+
+$$
+P(y_w \succ y_l \mid x)
+=
+\sigma
+\left(
+r(x,y_w) - r(x,y_l)
+\right)
+$$
+
+将上面的隐式奖励代入奖励差：
+
+$$
+r_\theta(x,y_w) - r_\theta(x,y_l)
+$$
+
+得到：
+
+$$
+\left(
+\beta \log
+\frac{\pi_\theta(y_w \mid x)}
+{\pi_{\text{ref}}(y_w \mid x)}
++ \beta \log Z(x)
+\right)
+-
+\left(
+\beta \log
+\frac{\pi_\theta(y_l \mid x)}
+{\pi_{\text{ref}}(y_l \mid x)}
++ \beta \log Z(x)
+\right)
+$$
+
+由于 $y_w$ 和 $y_l$ 来自同一个 prompt $x$，所以 $\beta \log Z(x)$ 是同一个常数项，在相减时会完全抵消：
+
+$$
+r_\theta(x,y_w) - r_\theta(x,y_l)
+=
+\beta
+\left[
+\log
+\frac{\pi_\theta(y_w \mid x)}
+{\pi_{\text{ref}}(y_w \mid x)}
+-
+\log
+\frac{\pi_\theta(y_l \mid x)}
+{\pi_{\text{ref}}(y_l \mid x)}
+\right]
+$$
+
+这一步解释了 DPO 为什么可以绕过无法计算的 $Z(x)$。
+
+## 6. 得到 DPO 损失
+
+将奖励差代回 Bradley-Terry 模型，并对偏好数据做负对数似然，就得到 DPO 的训练目标：
+
+$$
+\mathcal{L}_{\text{DPO}}(\pi_\theta; \pi_{\text{ref}})
+=
+-
+\mathbb{E}_{(x,y_w,y_l)\sim \mathcal{D}}
+\left[
+\log
+\sigma
+\left(
+\beta
+\left[
+\log
+\frac{\pi_\theta(y_w \mid x)}
+{\pi_{\text{ref}}(y_w \mid x)}
+-
+\log
+\frac{\pi_\theta(y_l \mid x)}
+{\pi_{\text{ref}}(y_l \mid x)}
+\right]
+\right)
+\right]
+$$
+
+从形式上看，DPO 直接优化偏好对：
+
+- 提高 preferred response $y_w$ 相对于参考模型的概率比。
+- 降低 rejected response $y_l$ 相对于参考模型的概率比。
+- 通过 $\beta$ 控制策略偏离参考模型的幅度。
+
+## 总结
+
+DPO 推导的关键链条是：
+
+```text
+RLHF KL 约束目标
+-> 理论最优策略的闭式解
+-> 反解出奖励函数
+-> 用 pi_theta 替换 pi*
+-> 代入 Bradley-Terry 偏好模型
+-> Z(x) 在偏好差中抵消
+-> 得到可直接训练语言模型的 DPO loss
+```
+
+因此，DPO 的核心价值在于：它把“先训练奖励模型，再用 RL 优化策略”的流程，改写成了一个直接基于偏好对训练策略模型的监督式目标。
