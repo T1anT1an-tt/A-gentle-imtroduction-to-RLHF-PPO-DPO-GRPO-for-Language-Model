@@ -1,8 +1,7 @@
 
-
 ![[Pasted image 20260604135228.png]]
 
-```
+```Python
 import gymnasium as gym
 import torch
 import torch.nn as nn
