@@ -1,17 +1,19 @@
-# PPO 稳定性实验框架
+# PPO 稳定性实验框架与扩展解析
 
-本目录提供一套基于 PyTorch 和 Gymnasium 的 PPO 可复现实验框架。代码在 MinimalRL PPO 实现的基础上进行了修正和扩展，重点用于观察 PPO 训练稳定性，而不是单纯追求最高分。
+本目录提供一套基于 PyTorch 和 Gymnasium 的 PPO 可复现实验框架，并配套整理了普通 PPO、连续动作 PPO 和 PPO-LSTM 的实现解析。代码在 MinimalRL PPO （https://github.com/T1anT1an-tt/minimalRL_Tt）实现的基础上进行了修正和扩展，重点用于观察 PPO 训练稳定性，而不是单纯追求最高分。
 
-该框架适合用于以下问题：
+当前已经完成微调实验框架的是 **CartPole 离散动作 PPO**。连续动作 PPO 和 PPO-LSTM 目前主要以代码解析和实现对比的形式整理，尚未纳入同一套批量微调与稳定性实验流程。
 
-- 不同学习率对 PPO 收敛稳定性的影响。
-- 不同 clip range 对策略更新幅度的约束效果。
-- 不同 rollout length 对训练方差和收敛速度的影响。
-- Advantage normalization、entropy bonus、gradient clipping 等稳定化技巧的消融对比。
+## 内容概览
 
-## 目录结构
+本目录可以分为两类内容：
 
-本实验框架由 4 个核心文件组成。
+- **实验框架代码**：用于运行 PPO 稳定性实验、保存日志并绘制结果。
+- **学习解析文档**：用于解释普通 PPO、连续动作 PPO 和 PPO-LSTM 的实现差异。
+
+## 实验框架代码
+
+实验框架由 4 个核心 Python 文件组成。
 
 ### 1. `ppo.py`：核心网络与 PPO 算法
 
@@ -24,7 +26,6 @@
   - Gradient clipping：通过 `use_grad_clip` 控制。
 - **训练指标记录**：`train_net()` 返回 `actor_loss`、`critic_loss`、`entropy`、`total_loss`、`ratio_mean`、`ratio_std`、`clip_fraction`、`adv_mean`、`adv_std` 等内部训练指标。
 
-这些指标可以帮助定位 PPO 中常见的不稳定现象，例如策略更新过大、entropy 快速塌缩、critic loss 震荡或 advantage 分布异常。
 
 ### 2. `train.py`：单次训练与日志记录
 
@@ -49,7 +50,6 @@
 3. **Rollout length sensitivity**：`T_horizon = [20, 64, 128, 256]`
 4. **Stabilization ablation**：`baseline`、`adv_norm`、`entropy`、`grad_clip`、`all`
 
-实验结果默认写入 `results/` 目录，并汇总生成 `summary_results.csv`。
 
 ### 4. `plot_results.py`：实验结果可视化
 
@@ -64,11 +64,9 @@
 - PPO ratio mean、ratio std 和 clip fraction 曲线。
 - Advantage mean 曲线。
 
-图像会保存到各实验子目录的 `plots/` 文件夹中。
-
 ## 运行方式
 
-实验脚本依赖 `pandas`、`seaborn` 和 `matplotlib` 进行数据处理和绘图。可以使用 `uv` 临时安装依赖并运行脚本。
+当前可直接运行的是 CartPole 离散动作 PPO 稳定性实验。实验脚本依赖 `pandas`、`seaborn` 和 `matplotlib` 进行数据处理和绘图。可以使用 `uv` 临时安装依赖并运行脚本。
 
 在当前目录 `ppo/` 下执行：
 
@@ -92,7 +90,7 @@ uv run --with pandas --with seaborn --with matplotlib python plot_results.py
 
 ## 阅读实验结果时关注什么
 
-该框架的重点是观察 PPO 的训练过程，而不是只看最终 reward。分析结果时可以重点关注：
+分析结果时可以重点关注：
 
 - reward 曲线是否平滑上升，还是出现明显震荡或回退。
 - entropy 是否过早下降，提示策略可能过早变得确定。
